@@ -1,0 +1,609 @@
+<?php
+require_once 'config.php';
+// Ensure only admin can access
+if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'admin') {
+    header("Location: index.php");
+    exit;
+}
+// Fetch current school info
+$school = null;
+try {
+    $stmt = $pdo->query("SELECT * FROM school_info LIMIT 1");
+    $school = $stmt->fetch(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    error_log("Error fetching school info: " . $e->getMessage());
+}
+$message = '';
+$message_type = '';
+// Handle form submission (Create or Update)
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $school_name = trim($_POST['school_name'] ?? '');
+    $address = trim($_POST['address'] ?? '');
+    $motto = trim($_POST['motto'] ?? '');
+    $phone = trim($_POST['phone'] ?? '');
+    $email = trim($_POST['email'] ?? '');
+
+    // Validate required field
+    if (empty($school_name)) {
+        $message = "School name is required.";
+        $message_type = "error";
+    } else {
+        $logo_path = $school['school_logo'] ?? null;
+
+        // Handle logo upload
+        if (!empty($_FILES['school_logo']['name'])) {
+            $upload_dir = 'uploads/logos/';
+            if (!is_dir($upload_dir)) {
+                mkdir($upload_dir, 0755, true);
+            }
+            $file_ext = strtolower(pathinfo($_FILES['school_logo']['name'], PATHINFO_EXTENSION));
+            $allowed = ['jpg', 'jpeg', 'png', 'gif'];
+            if (in_array($file_ext, $allowed)) {
+                $new_filename = 'logo_' . time() . '.' . $file_ext;
+                $target_path = $upload_dir . $new_filename;
+                if (move_uploaded_file($_FILES['school_logo']['tmp_name'], $target_path)) {
+                    // Delete old logo if exists
+                    if ($logo_path && file_exists($logo_path)) {
+                        unlink($logo_path);
+                    }
+                    $logo_path = $target_path;
+                } else {
+                    $message = "Failed to upload logo.";
+                    $message_type = "error";
+                }
+            } else {
+                $message = "Invalid logo format. Use JPG, PNG, or GIF.";
+                $message_type = "error";
+            }
+        }
+
+        if (!$message) {
+            try {
+                if ($school) {
+                    // Update existing
+                    $stmt = $pdo->prepare("
+                        UPDATE school_info
+                        SET school_name = ?, school_logo = ?, address = ?, motto = ?, phone = ?, email = ?
+                        WHERE id = ?
+                    ");
+                    $stmt->execute([$school_name, $logo_path, $address, $motto, $phone, $email, $school['id']]);
+                } else {
+                    // Insert new
+                    $stmt = $pdo->prepare("
+                        INSERT INTO school_info (school_name, school_logo, address, motto, phone, email)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    ");
+                    $stmt->execute([$school_name, $logo_path, $address, $motto, $phone, $email]);
+                }
+                $message = "School information saved successfully!";
+                $message_type = "success";
+                // Refresh data
+                $stmt = $pdo->query("SELECT * FROM school_info LIMIT 1");
+                $school = $stmt->fetch(PDO::FETCH_ASSOC);
+            } catch (PDOException $e) {
+                $message = "Database error: " . $e->getMessage();
+                $message_type = "error";
+                error_log($message);
+            }
+        }
+    }
+}
+
+// Handle delete logo
+if (isset($_GET['delete_logo']) && $school && $school['school_logo']) {
+    if (file_exists($school['school_logo'])) {
+        unlink($school['school_logo']);
+    }
+    try {
+        $pdo->prepare("UPDATE school_info SET school_logo = NULL WHERE id = ?")
+            ->execute([$school['id']]);
+        $school['school_logo'] = null;
+        $message = "Logo removed successfully.";
+        $message_type = "success";
+    } catch (PDOException $e) {
+        $message = "Failed to remove logo.";
+        $message_type = "error";
+    }
+}
+
+// Fetch admin info for header
+try {
+    $stmt = $pdo->prepare("SELECT fullname, email FROM users WHERE id = ?");
+    $stmt->execute([$_SESSION['user_id']]);
+    $admin = $stmt->fetch(PDO::FETCH_ASSOC);
+    $fullname = htmlspecialchars($admin['fullname'] ?? 'Admin');
+    $email_header = htmlspecialchars($admin['email'] ?? '—');
+} catch (Exception $e) {
+    $fullname = "Admin";
+    $email_header = "—";
+}
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>School Profile</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
+<style>
+:root {
+--primary: #1a2a6c;
+--secondary: #b21f1f;
+--sidebar-bg: #2c3e50;
+--sidebar-hover: #34495e;
+--text-light: #ecf0f1;
+--body-bg: #f8f9fa;
+--card-bg: #ffffff;
+--text-dark: #212529;
+}
+* {
+margin: 0;
+padding: 0;
+box-sizing: border-box;
+font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+body {
+display: flex;
+background-color: var(--body-bg);
+color: var(--text-dark);
+height: 100vh;
+overflow: hidden;
+}
+.sidebar {
+width: 280px;
+background: var(--sidebar-bg);
+color: var(--text-light);
+height: 100vh;
+position: fixed;
+top: 0;
+left: 0;
+overflow-y: auto;
+z-index: 1000;
+box-shadow: 2px 0 8px rgba(0, 0, 0, 0.12);
+display: flex;
+flex-direction: column;
+}
+.sidebar-header {
+padding: 1rem;
+min-height: 80px;
+background: var(--primary);
+font-weight: 700;
+font-size: 1.15rem;
+display: flex;
+align-items: center;
+gap: 10px;
+border-bottom: 1px solid #3a506b;
+flex-shrink: 0;
+}
+.nav-menu {
+list-style: none;
+padding: 0;
+flex: 1;
+overflow-y: auto;
+}
+.nav-item {
+border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.nav-link {
+display: flex;
+align-items: center;
+padding: 0.8rem 1.2rem;
+color: var(--text-light);
+text-decoration: none;
+font-size: 0.98rem;
+transition: all 0.2s;
+}
+.nav-link:hover {
+background: var(--sidebar-hover);
+color: white;
+}
+.nav-link i {
+width: 22px;
+font-size: 0.95rem;
+margin-right: 12px;
+text-align: center;
+color: #95a5a6;
+}
+.nav-link:hover i {
+color: #ecf0f1;
+}
+.dropdown-toggle::after {
+content: "▶";
+margin-left: auto;
+font-size: 0.7rem;
+color: #7f8c8d;
+transition: transform 0.3s;
+transform: rotate(0deg);
+}
+.dropdown.active > .nav-link.dropdown-toggle::after,
+.nested.active > .nav-link.dropdown-toggle::after {
+transform: rotate(90deg);
+color: #ecf0f1;
+}
+.dropdown-menu,
+.nested-menu {
+list-style: none;
+padding-left: 1.2rem;
+max-height: 0;
+overflow: hidden;
+background: rgba(0, 0, 0, 0.1);
+transition: max-height 0.3s ease;
+}
+.dropdown.active > .dropdown-menu {
+max-height: 1000px;
+padding: 0.45rem 0 0.45rem 1.2rem;
+}
+.nested.active > .nested-menu {
+max-height: 500px;
+padding: 0.3rem 0 0.3rem 1.2rem;
+background: rgba(0, 0, 0, 0.15);
+}
+.nested-menu .nav-link {
+padding: 0.5rem 0.7rem;
+font-size: 0.9rem;
+color: #d5dbdb;
+}
+.nested-menu .nav-link:hover {
+background: rgba(255, 255, 255, 0.1);
+padding-left: 0.9rem;
+}
+.logout-section {
+padding: 0.9rem 1.2rem;
+border-top: 1px solid rgba(255, 255, 255, 0.1);
+margin-top: auto;
+flex-shrink: 0;
+}
+.logout-btn {
+width: 100%;
+display: flex;
+align-items: center;
+gap: 10px;
+background: none;
+border: none;
+color: #e74c3c;
+font-size: 0.98rem;
+padding: 0.65rem 0;
+cursor: pointer;
+text-align: left;
+font-weight: 600;
+}
+.logout-btn:hover {
+color: #c0392b;
+}
+.main-wrapper {
+margin-left: 280px;
+width: calc(100% - 280px);
+display: flex;
+flex-direction: column;
+height: 100vh;
+overflow: hidden;
+}
+.header {
+height: 80px;
+min-height: 80px;
+background: white;
+box-shadow: 0 1px 5px rgba(0, 0, 0, 0.08);
+display: flex;
+align-items: center;
+justify-content: space-between;
+padding: 0 1.4rem;
+flex-shrink: 0;
+}
+.admin-info h1 {
+font-size: 1.5rem;
+color: var(--primary);
+margin: 0;
+}
+.admin-info p {
+font-size: 1rem;
+color: #6c757d;
+margin-top: 4px;
+}
+.role-tag {
+background: var(--primary);
+color: white;
+padding: 3px 10px;
+border-radius: 14px;
+font-size: 0.95rem;
+}
+.main-content {
+padding: 1.5rem;
+flex: 1;
+overflow-y: auto;
+}
+.card {
+background: white;
+border-radius: 8px;
+box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+padding: 1.5rem;
+max-width: 800px;
+margin: 0 auto;
+}
+.card h2 {
+color: var(--primary);
+margin-bottom: 1.2rem;
+font-size: 1.4rem;
+}
+.form-group {
+margin-bottom: 1.2rem;
+}
+.form-group label {
+display: block;
+margin-bottom: 0.4rem;
+font-weight: 600;
+color: #495057;
+}
+.form-control {
+width: 100%;
+padding: 0.6rem 0.8rem;
+border: 1px solid #ced4da;
+border-radius: 4px;
+font-size: 0.95rem;
+}
+textarea.form-control {
+min-height: 100px;
+resize: vertical;
+}
+.btn {
+padding: 0.55rem 1.2rem;
+background: var(--primary);
+color: white;
+border: none;
+border-radius: 4px;
+cursor: pointer;
+font-size: 0.95rem;
+font-weight: 600;
+transition: background 0.2s;
+}
+.btn:hover {
+background: #0f1d4d;
+}
+.btn-secondary {
+background: #6c757d;
+}
+.btn-danger {
+background: #dc3545;
+}
+.btn-danger:hover {
+background: #c82333;
+}
+.logo-preview {
+margin-top: 0.5rem;
+text-align: center;
+}
+.logo-preview img {
+max-width: 150px;
+max-height: 150px;
+border: 1px solid #eee;
+border-radius: 4px;
+}
+.alert {
+padding: 0.75rem 1rem;
+margin-bottom: 1.2rem;
+border-radius: 4px;
+font-weight: 500;
+}
+.alert-success {
+background: #d4edda;
+color: #155724;
+border: 1px solid #c3e6cb;
+}
+.alert-error {
+background: #f8d7da;
+color: #721c24;
+border: 1px solid #f5c6cb;
+}
+.actions {
+display: flex;
+gap: 0.75rem;
+margin-top: 1rem;
+}
+@media (max-width: 768px) {
+.sidebar { width: 70px; }
+.main-wrapper { margin-left: 70px; width: calc(100% - 70px); }
+.sidebar:hover { width: 280px; }
+.sidebar:hover + .main-wrapper { margin-left: 280px; width: calc(100% - 280px); }
+}
+</style>
+</head>
+<body>
+<!-- Sidebar (identical to admin_dashboard.php) -->
+<aside class="sidebar">
+<div class="sidebar-header">
+<i class="fas fa-school"></i>
+<span>School Admin</span>
+</div>
+<ul class="nav-menu">
+<!-- Teacher Management -->
+<li class="nav-item dropdown">
+<a href="#" class="nav-link dropdown-toggle">
+<i class="fas fa-chalkboard-teacher"></i>
+<span>Teacher Management</span>
+</a>
+<ul class="dropdown-menu">
+<li><a href="add_teacher.php" class="nav-link">Add Teacher</a></li>
+<li><a href="assign_subjects.php" class="nav-link">Assign Subjects</a></li>
+<li><a href="teachers.php" class="nav-link">View Teachers</a></li>
+<li><a href="edit_teachers.php" class="nav-link">Edit Teachers</a></li>
+<li><a href="delete_teacher.php" class="nav-link">Delete Teacher</a></li>
+</ul>
+</li>
+<!-- Student Management -->
+<li class="nav-item dropdown">
+<a href="#" class="nav-link dropdown-toggle">
+<i class="fas fa-user-graduate"></i>
+<span>Student Management</span>
+</a>
+<ul class="dropdown-menu">
+<li><a href="add_student.php" class="nav-link">Add Learner</a></li>
+<li><a href="students.php" class="nav-link">View Learners</a></li>
+<li><a href="promote_students.php" class="nav-link">Promote Learners</a></li>
+<li><a href="archive_students.php" class="nav-link">Archive Learners</a></li>
+<li><a href="archived_students.php" class="nav-link">View Archived Learners</a></li>
+</ul>
+</li>
+<!-- Classes & Stream -->
+<li class="nav-item dropdown">
+<a href="#" class="nav-link dropdown-toggle">
+<i class="fas fa-school"></i>
+<span>Classes & Stream</span>
+</a>
+<ul class="dropdown-menu">
+<li><a href="add_level.php" class="nav-link">Add Level</a></li>
+<li><a href="manage_levels.php" class="nav-link">Manage Levels</a></li>
+<li><a href="add_class.php" class="nav-link">Add Class</a></li>
+<li><a href="manage_classes.php" class="nav-link">Manage Classes</a></li>
+<li><a href="add_stream.php" class="nav-link">Add Stream</a></li>
+<li><a href="manage_streams.php" class="nav-link">Manage Streams</a></li>
+</ul>
+</li>
+<!-- Subjects -->
+<li class="nav-item dropdown">
+<a href="#" class="nav-link dropdown-toggle">
+<i class="fas fa-book"></i>
+<span>Subjects Management</span>
+</a>
+<ul class="dropdown-menu">
+<li><a href="add_subject.php" class="nav-link">Add Subject</a></li>
+<li><a href="subjects.php" class="nav-link">View Subjects</a></li>
+<li><a href="manage_subjects.php" class="nav-link">Manage Subjects</a></li>
+</ul>
+</li>
+<!-- Assessment -->
+<li class="nav-item dropdown">
+<a href="#" class="nav-link dropdown-toggle">
+<i class="fas fa-chart-bar"></i>
+<span>Assessment</span>
+</a>
+<ul class="dropdown-menu">
+<li class="nested">
+<a href="#" class="nav-link dropdown-toggle"><span>O-Level Assessment</span></a>
+<ul class="nested-menu">
+<li><a href="marks_o_level_add.php" class="nav-link">Add Marks</a></li>
+<li><a href="marks_o_level_view.php" class="nav-link">View Marks</a></li>
+<li><a href="grading_o_level.php" class="nav-link">Set Grading</a></li>
+</ul>
+</li>
+<li class="nested">
+<a href="#" class="nav-link dropdown-toggle"><span>A-Level Assessment</span></a>
+<ul class="nested-menu">
+<li><a href="marks_a_level_add.php" class="nav-link">Add Marks</a></li>
+<li><a href="marks_a_level_view.php" class="nav-link">View Marks</a></li>
+<li><a href="grading_a_level.php" class="nav-link">Set Grading</a></li>
+</ul>
+</li>
+<li class="nested">
+<a href="#" class="nav-link dropdown-toggle"><span>Examinations</span></a>
+<ul class="nested-menu">
+<li><a href="examination.php" class="nav-link">Set Exams</a></li>
+<li><a href="view_exam.php" class="nav-link">View Exams</a></li>
+<li><a href="archive_exams.php" class="nav-link">Archive Exams</a></li>
+<li><a href="view_archived_exams.php" class="nav-link">View Archived Exams</a></li>
+</ul>
+</li>
+<li><a href="reports.php" class="nav-link">Reports</a></li>
+<li><a href="academic_calendar.php" class="nav-link">Academic Calendar</a></li>
+</ul>
+</li>
+<!-- More -->
+<li class="nav-item dropdown">
+<a href="#" class="nav-link dropdown-toggle">
+<i class="fas fa-cog"></i>
+<span>More</span>
+</a>
+<ul class="dropdown-menu">
+<li><a href="export_logs.php" class="nav-link">Export Logs</a></li>
+<li><a href="settings.php" class="nav-link">Settings</a></li>
+<li><a href="profile.php" class="nav-link active">Profile</a></li>
+</ul>
+</li>
+</ul>
+<div class="logout-section">
+<button class="logout-btn" onclick="window.location='logout.php'">
+<i class="fas fa-sign-out-alt"></i>
+<span>Logout</span>
+</button>
+</div>
+</aside>
+
+<div class="main-wrapper">
+<header class="header">
+<div class="admin-info">
+<h1>Welcome back, <?= $fullname ?>!</h1>
+<p><?= $email_header ?></p>
+</div>
+<div class="role-tag">Admin</div>
+</header>
+<main class="main-content">
+<div class="card">
+<h2><i class="fas fa-school"></i> School Information</h2>
+<?php if ($message): ?>
+<div class="alert alert-<?= $message_type ?>"><?= htmlspecialchars($message) ?></div>
+<?php endif; ?>
+<form method="POST" enctype="multipart/form-data">
+<div class="form-group">
+<label for="school_name">School Name *</label>
+<input type="text" id="school_name" name="school_name" class="form-control"
+value="<?= htmlspecialchars($school['school_name'] ?? '') ?>" required>
+</div>
+<div class="form-group">
+<label for="school_logo">School Logo (JPG/PNG/GIF)</label>
+<input type="file" id="school_logo" name="school_logo" accept="image/*" class="form-control">
+<?php if (!empty($school['school_logo']) && file_exists($school['school_logo'])): ?>
+<div class="logo-preview">
+<img src="<?= htmlspecialchars($school['school_logo']) ?>" alt="School Logo">
+<br><br>
+<a href="?delete_logo=1" class="btn btn-danger btn-sm" onclick="return confirm('Remove logo?')">
+<i class="fas fa-trash"></i> Remove Logo
+</a>
+</div>
+<?php endif; ?>
+</div>
+<div class="form-group">
+<label for="address">Address</label>
+<textarea id="address" name="address" class="form-control"><?= htmlspecialchars($school['address'] ?? '') ?></textarea>
+</div>
+<div class="form-group">
+<label for="motto">Motto</label>
+<input type="text" id="motto" name="motto" class="form-control" value="<?= htmlspecialchars($school['motto'] ?? '') ?>">
+</div>
+<div class="form-group">
+<label for="phone">Phone</label>
+<input type="text" id="phone" name="phone" class="form-control" value="<?= htmlspecialchars($school['phone'] ?? '') ?>">
+</div>
+<div class="form-group">
+<label for="email">Email</label>
+<input type="email" id="email" name="email" class="form-control" value="<?= htmlspecialchars($school['email'] ?? '') ?>">
+</div>
+<div class="actions">
+<button type="submit" class="btn">
+<i class="fas fa-save"></i> Save Information
+</button>
+<a href="admin_dashboard.php" class="btn btn-secondary">
+<i class="fas fa-arrow-left"></i> Back to Dashboard
+</a>
+</div>
+</form>
+</div>
+</main>
+</div>
+
+<script>
+// Dropdown toggle logic (same as admin_dashboard.php)
+document.querySelectorAll('.dropdown > .dropdown-toggle').forEach(link => {
+    link.addEventListener('click', function(e) {
+        e.preventDefault();
+        const parent = this.closest('.dropdown');
+        parent.classList.toggle('active');
+    });
+});
+document.querySelectorAll('.nested > .dropdown-toggle').forEach(link => {
+    link.addEventListener('click', function(e) {
+        e.preventDefault();
+        const parent = this.closest('.nested');
+        parent.classList.toggle('active');
+    });
+});
+</script>
+</body>
+</html>
